@@ -1,0 +1,12 @@
+This project (the "Software") is licensed under the MIT License and covers
+only the source code and tooling in this repository (for example
+aws_docs_to_epub.py, refresh.sh, the Kiro skill, and documentation).
+
+It does NOT include or redistribute any AWS documentation content. The tool
+downloads AWS documentation at runtime from docs.aws.amazon.com. That
+documentation is Copyright (c) Amazon Web Services, Inc. or its affiliates,
+and is governed by the AWS Site Terms (https://aws.amazon.com/terms/).
+
+Generated EPUB files are unofficial offline copies intended for personal
+reading and are NOT covered by the MIT License in this repository.
+Redistribution of the generated content may be subject to AWS's terms.

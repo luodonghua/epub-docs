@@ -1,0 +1,12 @@
+# Generated EPUB builds (contain AWS documentation content — do not commit)
+*.epub
+*-latest.epub
+
+# Fetched source artifacts
+toc-contents.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
