@@ -274,6 +274,43 @@ def urljoin(base: str, src: str) -> str:
     return f"{base}/{src.lstrip('./')}"
 
 
+def available_memory_bytes() -> int | None:
+    """Best-effort available RAM in bytes (Linux /proc/meminfo), else None."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    # value is in kB
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def total_memory_bytes() -> int | None:
+    """Best-effort total RAM in bytes (Linux /proc/meminfo), else None."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def free_swap_bytes() -> int:
+    """Best-effort free swap in bytes (Linux /proc/meminfo), else 0."""
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            for line in fh:
+                if line.startswith("SwapFree:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
 def make_image_name(url: str, index: int) -> str:
     ext = os.path.splitext(url.split("?", 1)[0])[1] or ".img"
     h = hashlib.sha1(url.encode()).hexdigest()[:8]
@@ -356,8 +393,28 @@ def build_body_html(guide: Guide, verbose: bool = True) -> str:
 
     tasks = [(p.slug, rewrite_body(p, guide, href_to_slug)) for p in guide.pages]
 
-    # Parallelise the per-page pandoc conversions (CPU/subprocess bound).
-    max_workers = min(16, (os.cpu_count() or 4) * 2)
+    # Free the downloaded markdown now that each page's rewritten source has
+    # been captured in `tasks`: on large guides (~1000 pages) keeping every
+    # page's raw markdown resident adds hundreds of MB of needless pressure
+    # that competes with the final pandoc packaging step on small-RAM hosts.
+    for p in guide.pages:
+        p.markdown = ""
+
+    # Parallelise the per-page pandoc conversions (CPU/subprocess bound), but
+    # scale the worker count by available memory as well as CPU. Each pandoc
+    # worker is a separate GHC-runtime process; spawning 16 at once on a small
+    # host (e.g. ~4 GiB) wastes memory and can push the box into swap. Budget
+    # ~256 MiB of headroom per concurrent pandoc process.
+    cpu_cap = min(16, (os.cpu_count() or 4) * 2)
+    avail = available_memory_bytes()
+    if avail is not None:
+        mem_cap = max(1, int(avail // (256 * 1024 * 1024)))
+        max_workers = max(1, min(cpu_cap, mem_cap))
+    else:
+        max_workers = cpu_cap
+    if verbose:
+        print(f"  per-page conversion with {max_workers} worker(s)",
+              file=sys.stderr)
     with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
         for i, (slug, html) in enumerate(ex.map(_page_to_html, tasks), 1):
             rendered[slug] = html
@@ -368,6 +425,7 @@ def build_body_html(guide: Guide, verbose: bool = True) -> str:
     # heading (H1 for top-level pages, deeper for nested), so pandoc rebuilds
     # the section hierarchy and splits chapters at each H1.
     parts: list[str] = [rendered[page.slug] for page in guide.pages]
+    rendered.clear()
     return "\n".join(parts)
 
 
@@ -450,12 +508,52 @@ def run_pandoc(
     ]
     # embed media directory resources via --resource-path
     cmd += ["--resource-path", str(workdir)]
+
+    # Bound pandoc's GHC heap and let the runtime return freed memory to the
+    # OS promptly. On small-RAM hosts the single packaging pass for a large
+    # guide (~1000 pages) is what triggers the OOM killer (SIGKILL / exit -9).
+    # Capping the heap just under available memory turns a hard kernel kill
+    # into a graceful pandoc heap-overflow error we can report clearly, and
+    # `--idle-gc`/compacting GC reduce the resident peak.
+    avail = available_memory_bytes()
+    if avail is not None:
+        # Pandoc may legitimately need to grow into swap to package a very
+        # large guide on a small-RAM host. Allow the heap to use available
+        # RAM *plus* free swap, keeping ~256 MiB of total headroom so the
+        # kernel is never driven to SIGKILL. Floor at 512 MiB.
+        budget = avail + free_swap_bytes() - (256 * 1024 * 1024)
+        heap_mb = max(512, int(budget // (1024 * 1024)))
+        # -M<n>m  : cap total heap so we fail gracefully instead of OOM-kill.
+        # -c      : use the compacting collector for the oldest generation,
+        #           which lowers the resident peak (less fragmentation) at a
+        #           small CPU cost -- the right trade on a memory-starved host.
+        cmd += ["+RTS", f"-M{heap_mb}m", "-c", "-RTS"]
     print("  running pandoc (packaging EPUB)...", file=sys.stderr)
     proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout)
         sys.stderr.write(proc.stderr)
-        raise RuntimeError(f"pandoc failed with exit code {proc.returncode}")
+        rc = proc.returncode
+        if rc == -9:
+            total = total_memory_bytes()
+            total_gib = f"{total / (1024**3):.1f} GiB" if total else "unknown"
+            raise RuntimeError(
+                "pandoc was killed by the OS (SIGKILL / exit -9) while "
+                "packaging the EPUB. This is an out-of-memory condition: the "
+                f"host has only {total_gib} RAM and this guide is too large to "
+                "package in one pass. Remedies: add swap "
+                "(e.g. `sudo fallocate -l 4G /swapfile && sudo chmod 600 "
+                "/swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`), "
+                "run on a host with more RAM, or close other memory-hungry "
+                "processes, then re-run."
+            )
+        if proc.stderr and "Heap exhausted" in proc.stderr:
+            raise RuntimeError(
+                "pandoc exhausted its bounded heap while packaging the EPUB "
+                "(the guide needs more memory than is available on this host). "
+                "Add swap or use a host with more RAM, then re-run."
+            )
+        raise RuntimeError(f"pandoc failed with exit code {rc}")
     if proc.stderr.strip():
         print(proc.stderr.strip(), file=sys.stderr)
 
@@ -499,6 +597,14 @@ def generate(guide: Guide, output: Path, keep_workdir: bool = False) -> Path:
         body_html = workdir / "body.html"
         body_html.write_text(full_html, encoding="utf-8")
 
+        # Release the large in-memory HTML buffers now that they live on disk.
+        # For a ~1000-page guide these strings are tens of MB each; holding
+        # them during the final pandoc pass needlessly competes for RAM on a
+        # memory-starved host.
+        del full_html, body_fragment
+        import gc as _gc
+        _gc.collect()
+
         print(f"Downloading {len(guide.images)} image(s) ...", file=sys.stderr)
         download_images(guide, workdir / "media")
 
@@ -537,7 +643,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="Book author/publisher (default: Amazon Web Services).")
     parser.add_argument(
         "-o", "--output", type=Path,
-        help="Output .epub path (default: <guide>-<date>.epub).",
+        help="Output .epub path (default: outputs/<guide>-<date>.epub).",
     )
     parser.add_argument("--keep-workdir", action="store_true",
                         help="Keep the temporary build directory for debugging.")
@@ -560,7 +666,15 @@ def main(argv: list[str] | None = None) -> int:
               "'sudo apt-get install -y pandoc'.", file=sys.stderr)
         return 2
 
-    output = args.output or Path(f"{name}-{_dt.date.today().isoformat()}.epub")
+    # Default output lands in the repo's outputs/ directory so generated books
+    # stay grouped and out of the project root. An explicit -o path is honored
+    # as given.
+    default_out = (
+        Path(__file__).resolve().parent
+        / "outputs"
+        / f"{name}-{_dt.date.today().isoformat()}.epub"
+    )
+    output = args.output or default_out
     guide = Guide(base_url=base_url, title=title, author=author)
     try:
         generate(guide, output, keep_workdir=args.keep_workdir)

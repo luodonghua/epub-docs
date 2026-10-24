@@ -1,6 +1,5 @@
-# Generated EPUB builds (contain AWS documentation content — do not commit)
-*.epub
-*-latest.epub
+# Generated EPUB builds are committed under outputs/ (public AWS documentation
+# content — see NOTICE). They are intentionally NOT ignored.
 
 # Fetched source artifacts
 toc-contents.json
@@ -10,3 +9,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Stray nested working copy (not part of the repo)
+epub-docs/

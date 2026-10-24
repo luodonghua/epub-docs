@@ -19,9 +19,9 @@ whether your copy is current.
 ./refresh.sh aurora          # Amazon Aurora (large: ~1000 pages, a few minutes)
 ```
 
-This produces:
-- `aurora-dsql-YYYY-MM-DD.epub` — the dated build
-- `aurora-dsql-latest.epub` — a symlink to the newest build
+This produces (in the `outputs/` directory):
+- `outputs/aurora-dsql-YYYY-MM-DD.epub` — the dated build
+- `outputs/aurora-dsql-latest.epub` — a symlink to the newest build
 
 Copy the `.epub` to your iPad via AirDrop, the Files app, or Apple Books.
 
@@ -118,6 +118,7 @@ This license covers only the source code (e.g. `aws_docs_to_epub.py`,
 `refresh.sh`, the Kiro skill). It does **not** cover AWS documentation
 content, which the tool downloads at runtime from `docs.aws.amazon.com`. That
 content is © Amazon Web Services and is governed by the
-[AWS Site Terms](https://aws.amazon.com/terms/). Generated EPUB files are
-unofficial offline copies for personal use and are not redistributed by this
-repository. See [NOTICE](NOTICE) for details.
+[AWS Site Terms](https://aws.amazon.com/terms/). Pre-built EPUB files under
+`outputs/` are unofficial offline copies of publicly available AWS
+documentation, included for convenience and intended for personal use. See
+[NOTICE](NOTICE) for details.

@@ -54,13 +54,15 @@ else
   done
 fi
 
-OUT="$SCRIPT_DIR/${STEM}-${DATE}.epub"
+OUT_DIR="$SCRIPT_DIR/outputs"
+mkdir -p "$OUT_DIR"
+OUT="$OUT_DIR/${STEM}-${DATE}.epub"
 
 echo "==> Building EPUB: $OUT"
 python3 "$GEN" "$@" -o "$OUT"
 
 # --- update the stable 'latest' symlink ------------------------------------
-LATEST="$SCRIPT_DIR/${STEM}-latest.epub"
+LATEST="$OUT_DIR/${STEM}-latest.epub"
 ln -sf "$(basename "$OUT")" "$LATEST"
 echo "==> Updated symlink: $LATEST -> $(basename "$OUT")"
 
